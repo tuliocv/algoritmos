@@ -39,12 +39,13 @@ def load_state() -> Dict[str, Any]:
         state = {
             "question": DEFAULT_QUESTION,
             "active_question_id": new_question_id(),
-            "accepting": False,                 # começa fechado (você abre quando quiser)
+            "accepting": False,
             "updated_at": now_iso(),
-            "deadline_iso": None,               # fechamento automático (UTC ISO)
-            "show_top3_to_students": False,     # revelar top3 no aluno
-            "live_mode": True,                  # auto-refresh no aluno
-            "evaluation_mode": "natural",       # natural | pseudocode
+            "deadline_iso": None,
+            "show_top3_to_students": False,
+            "live_mode": True,
+            "evaluation_mode": "natural",  # natural | pseudocode
+            "debug_mode": False,
         }
         save_state(state)
         return state
@@ -53,13 +54,14 @@ def load_state() -> Dict[str, Any]:
         state = json.load(f)
 
     # backward-compatible defaults
+    state.setdefault("question", DEFAULT_QUESTION)
     state.setdefault("active_question_id", new_question_id())
+    state.setdefault("accepting", False)
     state.setdefault("deadline_iso", None)
     state.setdefault("show_top3_to_students", False)
     state.setdefault("live_mode", True)
     state.setdefault("evaluation_mode", "natural")
-    state.setdefault("accepting", False)
-    state.setdefault("question", DEFAULT_QUESTION)
+    state.setdefault("debug_mode", False)
     return state
 
 def save_state(state: Dict[str, Any]) -> None:
@@ -245,28 +247,87 @@ SUBMISSÕES (JSON):
 {json.dumps(payload, ensure_ascii=False, indent=2)}
 """.strip()
 
-def parse_json_safely(text: str) -> Dict[str, Any]:
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        return json.loads(text[start : end + 1])
-    raise ValueError("Não foi possível interpretar JSON do retorno do modelo.")
-
-def run_openai_evaluation(api_key: str, model: str, prompt: str) -> Dict[str, Any]:
-    client = OpenAI(api_key=api_key)
-    resp = client.responses.create(model=model, input=prompt)
-    return parse_json_safely(resp.output_text)
-
 def normalize_results(grades: Dict[str, Any]) -> Dict[str, Any]:
     grades = grades or {}
     grades.setdefault("results", [])
     grades.setdefault("top3", [])
     grades.setdefault("summary", {"common_strengths": [], "common_gaps": [], "teacher_tip": ""})
     return grades
+
+def run_openai_evaluation(api_key: str, model: str, prompt: str) -> Dict[str, Any]:
+    """
+    Versão robusta: força JSON válido usando Structured Outputs (JSON Schema).
+    Se der erro, a exceção sobe e será exibida com st.exception.
+    """
+    client = OpenAI(api_key=api_key)
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "results": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "submission_id": {"type": "string"},
+                        "student": {"type": "string"},
+                        "score": {"type": "number"},
+                        "strengths": {"type": "array", "items": {"type": "string"}},
+                        "improvements": {"type": "array", "items": {"type": "string"}},
+                        "one_suggestion": {"type": "string"},
+                    },
+                    "required": ["submission_id", "student", "score", "strengths", "improvements", "one_suggestion"],
+                    "additionalProperties": False,
+                },
+            },
+            "top3": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "rank": {"type": "number"},
+                        "submission_id": {"type": "string"},
+                        "student": {"type": "string"},
+                        "why_it_wins": {"type": "array", "items": {"type": "string"}},
+                        "highlight_excerpt": {"type": "string"},
+                    },
+                    "required": ["rank", "submission_id", "student", "why_it_wins", "highlight_excerpt"],
+                    "additionalProperties": False,
+                },
+            },
+            "summary": {
+                "type": "object",
+                "properties": {
+                    "common_strengths": {"type": "array", "items": {"type": "string"}},
+                    "common_gaps": {"type": "array", "items": {"type": "string"}},
+                    "teacher_tip": {"type": "string"},
+                },
+                "required": ["common_strengths", "common_gaps", "teacher_tip"],
+                "additionalProperties": False,
+            },
+        },
+        "required": ["results", "top3", "summary"],
+        "additionalProperties": False,
+    }
+
+    resp = client.responses.create(
+        model=model,
+        input=prompt,
+        text={
+            "format": {
+                "type": "json_schema",
+                "name": "grading_result",
+                "schema": schema,
+                "strict": True,
+            }
+        },
+    )
+
+    out = getattr(resp, "output_text", "") or ""
+    if not out.strip():
+        raise RuntimeError(f"Resposta vazia do modelo. status={getattr(resp, 'status', 'unknown')}")
+
+    return json.loads(out)
 
 # -------------------------
 # Lógica de prazo (fechar automático)
@@ -300,7 +361,6 @@ def remaining_seconds(deadline_iso: Optional[str]) -> Optional[int]:
 # -------------------------
 st.set_page_config(page_title=APP_TITLE, page_icon="🧠", layout="wide")
 
-# CSS leve (visual mais bonito)
 st.markdown(
     """
 <style>
@@ -328,6 +388,13 @@ div[data-testid="stAlert"] { border-radius: 14px; }
 .badge-green {
   background: rgba(34, 197, 94, 0.10); border: 1px solid rgba(34, 197, 94, 0.25);
 }
+.codebox {
+  background: rgba(15, 23, 42, 0.05);
+  border: 1px dashed rgba(15, 23, 42, 0.2);
+  padding: 10px;
+  border-radius: 14px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
 </style>
 """,
     unsafe_allow_html=True,
@@ -348,7 +415,6 @@ tabs = st.tabs(["👩‍🎓 Aluno", "🛠️ Admin"])
 # ALUNO
 # -------------------------
 with tabs[0]:
-    # Modo Live: auto-refresh só do painel do aluno (a cada 5s)
     if state.get("live_mode", True):
         st_autorefresh(interval=5000, key="live_refresh")  # 5s
 
@@ -358,7 +424,6 @@ with tabs[0]:
     mode_label = "🗣️ Linguagem natural" if eval_mode == "natural" else "🧩 Pseudocódigo"
     st.caption(f"🔍 Esta atividade será avaliada como: **{mode_label}**")
 
-    # Painel do aluno: contador + status + tempo restante
     subs_all = load_submissions()
     subs_current = [s for s in subs_all if s.get("question_id") == qid]
     rem = remaining_seconds(state.get("deadline_iso"))
@@ -392,7 +457,7 @@ with tabs[0]:
             answer = st.text_area(
                 "Escreva aqui o seu algoritmo :)",
                 height=220,
-                placeholder="Ex.: 1) Abra o dicionário... 2) Veja a primeira letra... 3) Se a letra for antes/depois...",
+                placeholder="Ex.: 1) ... 2) ... 3) Se ... então ...",
             )
             submitted = st.form_submit_button("Enviar resposta", type="primary")
 
@@ -419,7 +484,6 @@ with tabs[0]:
     st.divider()
     st.caption("Dica: passos curtos, ordem clara e use condições do tipo “se... então...” quando fizer sentido.")
 
-    # Revelar TOP 3 pros alunos (quando o admin liberar)
     if state.get("show_top3_to_students", False):
         grades = load_grades(qid)
         top3 = (grades or {}).get("top3", [])
@@ -463,7 +527,6 @@ with tabs[1]:
             accepting = st.toggle("Aceitar novas respostas", value=bool(state.get("accepting", False)))
             if accepting != bool(state.get("accepting", False)):
                 state["accepting"] = accepting
-                # se abrir manualmente e deadline expirou, limpa deadline para evitar fechar instantâneo
                 if accepting and remaining_seconds(state.get("deadline_iso")) == 0:
                     state["deadline_iso"] = None
                 save_state(state)
@@ -484,9 +547,14 @@ with tabs[1]:
                 st.success("Modo Live atualizado.")
                 st.rerun()
 
+            debug_mode = st.toggle("Debug (mostrar arquivos/JSON)", value=bool(state.get("debug_mode", False)))
+            if debug_mode != bool(state.get("debug_mode", False)):
+                state["debug_mode"] = debug_mode
+                save_state(state)
+                st.rerun()
+
             st.caption(f"Última atualização: {state.get('updated_at','-')}")
 
-        # Seleção do tipo de avaliação (natural vs pseudocódigo)
         st.markdown("### 🧠 Tipo de avaliação do algoritmo")
         choice = st.radio(
             "Avaliar respostas como:",
@@ -496,7 +564,6 @@ with tabs[1]:
             ],
             format_func=lambda x: x[1],
             index=0 if state.get("evaluation_mode", "natural") == "natural" else 1,
-            horizontal=False,
         )
         new_mode = choice[0]
         if new_mode != state.get("evaluation_mode", "natural"):
@@ -505,10 +572,8 @@ with tabs[1]:
             st.success("Modo de avaliação atualizado.")
             st.rerun()
 
-        # Tempo de coleta (fecha automático)
         st.markdown("### ⏱️ Tempo de coleta (fecha automático)")
         cc1, cc2, cc3 = st.columns([1, 1, 2])
-
         with cc1:
             minutes = st.number_input("Minutos", min_value=0, max_value=180, value=0, step=1)
         with cc2:
@@ -519,7 +584,7 @@ with tabs[1]:
                 else:
                     dl = datetime.now(timezone.utc) + timedelta(minutes=int(minutes))
                     state["deadline_iso"] = dl.isoformat()
-                    state["accepting"] = True  # ao iniciar contagem, abre automaticamente
+                    state["accepting"] = True
                     st.success(f"Coleta aberta por {minutes} min.")
                 save_state(state)
                 st.rerun()
@@ -576,10 +641,11 @@ with tabs[1]:
         with colm1:
             model = st.selectbox("Modelo", options=["gpt-5.2", "gpt-5-mini", "gpt-4.1"], index=0)
         with colm2:
-            st.caption(" ")
-            st.caption(f"Modo: **{mode_label}**")
+            mode_label_admin = "🗣️ Linguagem natural" if state.get("evaluation_mode","natural") == "natural" else "🧩 Pseudocódigo"
+            st.caption(f"Modo atual: **{mode_label_admin}**")
+            st.caption(f"Rodada (question_id): `{qid}`")
         with colm3:
-            st.caption("Depois de inserir a chave é só ir :)")
+            st.caption("Cole a API key e clique em **Avaliar agora**. Se der erro, o app mostra o detalhe completo.")
 
         btn_col1, btn_col2 = st.columns([1, 1])
         with btn_col1:
@@ -595,16 +661,22 @@ with tabs[1]:
                     try:
                         with st.spinner("Avaliando..."):
                             result = run_openai_evaluation(api_key=api_key, model=model, prompt=prompt)
+
                         result = normalize_results(result)
                         result["evaluated_at"] = now_iso()
                         result["evaluated_count"] = len(subs_current)
                         result["question_id"] = qid
                         result["question_text"] = current_q
                         result["evaluation_mode"] = state.get("evaluation_mode", "natural")
+                        result["model_used"] = model
+
                         save_grades(qid, result)
-                        st.success(f"✅ Avaliação concluída e salva em data/grades/{qid}.json.")
+                        st.success(f"✅ Avaliação salva em: {grade_path_for(qid)}")
+                        st.rerun()
+
                     except Exception as e:
-                        st.error(f"Falha ao avaliar: {e}")
+                        st.error("❌ Falha ao avaliar (detalhes abaixo):")
+                        st.exception(e)
 
         with btn_col2:
             if st.button("Apagar resultados (rodada atual)"):
@@ -670,7 +742,39 @@ with tabs[1]:
             st.caption(
                 f"Avaliado em: {grades.get('evaluated_at','-')} | "
                 f"Total: {grades.get('evaluated_count','-')} | "
-                f"Modo: {grades.get('evaluation_mode','-')} | Rodada: {qid}"
+                f"Modo: {grades.get('evaluation_mode','-')} | "
+                f"Modelo: {grades.get('model_used','-')} | "
+                f"Rodada: {qid}"
             )
         else:
             st.info("Nenhuma avaliação salva ainda. Clique em **Avaliar agora** para gerar notas e TOP 3.")
+
+        # -------------------------
+        # DEBUG: ver arquivos e JSON no próprio Streamlit
+        # -------------------------
+        if state.get("debug_mode", False):
+            st.divider()
+            st.subheader("🧪 DEBUG — arquivos e conteúdo salvo")
+
+            expected = grade_path_for(qid)
+            st.write("📌 Caminho esperado do arquivo de avaliação desta rodada:")
+            st.markdown(f'<div class="codebox">{expected}</div>', unsafe_allow_html=True)
+            st.write("Arquivo existe?", os.path.exists(expected))
+
+            st.write("📁 Listagem de arquivos em `data/`:")
+            if os.path.exists(DATA_DIR):
+                for root, dirs, files in os.walk(DATA_DIR):
+                    st.write(f"📁 {root}")
+                    for f in files:
+                        st.write(f"  📄 {f}")
+            else:
+                st.warning("Diretório data/ não existe.")
+
+            if os.path.exists(expected):
+                st.write("🧾 Conteúdo do JSON salvo (grades):")
+                try:
+                    with open(expected, "r", encoding="utf-8") as f:
+                        st.json(json.load(f))
+                except Exception as e:
+                    st.error("Não consegui abrir o arquivo de avaliação:")
+                    st.exception(e)

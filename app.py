@@ -1,15 +1,3 @@
-# app.py
-# Streamlit app: alunos enviam nome + resposta; admin gerencia questão e dispara avaliação via OpenAI.
-# - Armazena submissões em data/submissions.jsonl (JSON Lines)
-# - Armazena estado (questão/aberto-fechado) em data/state.json
-# - Armazena avaliação (notas/feedback + TOP 3) em data/grades.json
-#
-# Requisitos:
-#   pip install streamlit openai pandas
-#
-# .streamlit/secrets.toml:
-#   ADMIN_USER="admin"
-#   ADMIN_PASS="troque_esta_senha"
 
 import os
 import json
@@ -21,14 +9,14 @@ import pandas as pd
 import streamlit as st
 from openai import OpenAI
 
-APP_TITLE = "Coleta + Avaliação (Algoritmos)"
+APP_TITLE = "Aprendendo Algoritmos"
 DATA_DIR = "data"
 STATE_PATH = os.path.join(DATA_DIR, "state.json")
 SUBMISSIONS_PATH = os.path.join(DATA_DIR, "submissions.jsonl")
 GRADES_PATH = os.path.join(DATA_DIR, "grades.json")
 
 DEFAULT_QUESTION = (
-    "Ex. 2: Auxilie uma criança, já alfabetizada, a procurar uma palavra no dicionário. "
+    "Aguarde a questão para enviar sua resposta."
     "Escreva um passo a passo dessas instruções."
 )
 
@@ -153,7 +141,7 @@ def build_rubric_prompt(question: str, submissions: List[Dict[str, Any]]) -> str
         )
 
     return f"""
-Você é um avaliador pedagógico de respostas sobre ALGORITMOS (passo a passo).
+Você é um professor da disciplina de ALGORITMOS E PROGRAMAÇÃO e precisaa avaliar as respostas sobre ALGORITMOS (passo a passo).
 Avalie cada resposta de forma objetiva e respeitosa.
 
 PERGUNTA:
@@ -266,9 +254,9 @@ with tabs[0]:
         with st.form("student_form", clear_on_submit=True):
             student_name = st.text_input("Seu nome (obrigatório)")
             answer = st.text_area(
-                "Sua resposta (passo a passo)",
+                "Escreva aqui o seu algoritmo :)",
                 height=220,
-                placeholder="Ex.: 1) Abra o dicionário... 2) Veja a primeira letra... 3) Se...",
+                placeholder="Exemplo: 1) Abra o estojo, 2) Procure a caneta azul, 3) Pegue a caneta azul ....",
             )
             submitted = st.form_submit_button("Enviar resposta", type="primary")
 
@@ -278,8 +266,8 @@ with tabs[0]:
 
             if len(student_name) < 2:
                 st.error("Digite seu nome.")
-            elif len(answer) < 10:
-                st.error("Escreva uma resposta um pouco mais completa (mínimo ~10 caracteres).")
+            elif len(answer) < 30:
+                st.error("Escreva uma resposta um pouco mais completa (mínimo ~30 caracteres).")
             else:
                 entry = {
                     "submission_id": f"{int(time.time()*1000)}",
@@ -301,7 +289,7 @@ with tabs[1]:
     admin_login_ui()
 
     if not is_admin_logged_in():
-        st.info("Entre como admin para gerenciar a questão e avaliar respostas.")
+        st.info("Entre para gerenciar a questão e avaliar respostas.")
     else:
         st.subheader("⚙️ Configurações da Questão")
 
@@ -358,10 +346,10 @@ with tabs[1]:
             st.warning("Ainda não há submissões para a questão atual.")
 
         st.divider()
-        st.subheader("🤖 Avaliar com ChatGPT (API)")
+        st.subheader("🤖 Avaliar respostas")
 
-        st.caption("Cole a OpenAI API Key na hora (não é salva por este app). O resultado será salvo em data/grades.json.")
-        api_key = st.text_input("OpenAI API Key", type="password", placeholder="sk-...", key="openai_api_key")
+        st.caption(" ")
+        api_key = st.text_input("API Key", type="password", placeholder="sk-...", key="openai_api_key")
 
         colm1, colm2, colm3 = st.columns([1, 1, 2])
         with colm1:
@@ -371,7 +359,7 @@ with tabs[1]:
             st.write("")
             only_current = st.toggle("Avaliar só questão atual", value=True)
         with colm3:
-            st.caption("Sugestão: **gpt-5.2** (melhor feedback). **gpt-5-mini** (mais barato/rápido).")
+            st.caption("Depois de inserir a chave é só ir :)")
 
         eval_list = subs_current if only_current else subs_all
 

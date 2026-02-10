@@ -1,13 +1,15 @@
-
 import os
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import streamlit as st
 from openai import OpenAI
+
+# Auto refresh (modo live) - lib leve
+from streamlit_autorefresh import st_autorefresh
 
 APP_TITLE = "Aprendendo Algoritmos"
 DATA_DIR = "data"
@@ -16,7 +18,7 @@ SUBMISSIONS_PATH = os.path.join(DATA_DIR, "submissions.jsonl")
 GRADES_PATH = os.path.join(DATA_DIR, "grades.json")
 
 DEFAULT_QUESTION = (
-    "Aguarde a questão para enviar sua resposta."
+    "Aguarde a questão para enviar sua resposta.\n\n"
     "Escreva um passo a passo dessas instruções."
 )
 
@@ -32,11 +34,24 @@ def now_iso() -> str:
 def load_state() -> Dict[str, Any]:
     ensure_data_dir()
     if not os.path.exists(STATE_PATH):
-        state = {"question": DEFAULT_QUESTION, "accepting": True, "updated_at": now_iso()}
+        state = {
+            "question": DEFAULT_QUESTION,
+            "accepting": False,                 # começa fechado para você “soltar” a questão
+            "updated_at": now_iso(),
+            "deadline_iso": None,               # fechamento automático (UTC ISO)
+            "show_top3_to_students": False,     # revelar top3
+            "live_mode": True,                  # auto-refresh do painel do aluno
+        }
         save_state(state)
         return state
     with open(STATE_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+        state = json.load(f)
+
+    # backward-compatible defaults
+    state.setdefault("deadline_iso", None)
+    state.setdefault("show_top3_to_students", False)
+    state.setdefault("live_mode", True)
+    return state
 
 def save_state(state: Dict[str, Any]) -> None:
     ensure_data_dir()
@@ -141,8 +156,8 @@ def build_rubric_prompt(question: str, submissions: List[Dict[str, Any]]) -> str
         )
 
     return f"""
-Você é um professor da disciplina de ALGORITMOS E PROGRAMAÇÃO e precisaa avaliar as respostas sobre ALGORITMOS (passo a passo).
-Avalie cada resposta de forma objetiva e respeitosa.
+Você é um professor da disciplina de ALGORITMOS E PROGRAMAÇÃO e precisa avaliar respostas sobre ALGORITMOS (passo a passo).
+Avalie cada resposta de forma objetiva, respeitosa e didática.
 
 PERGUNTA:
 {question}
@@ -200,13 +215,11 @@ SUBMISSÕES (JSON):
 """.strip()
 
 def parse_json_safely(text: str) -> Dict[str, Any]:
-    # 1) tenta direto
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
 
-    # 2) tenta extrair primeiro bloco JSON
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end != -1 and end > start:
@@ -216,14 +229,10 @@ def parse_json_safely(text: str) -> Dict[str, Any]:
 
 def run_openai_evaluation(api_key: str, model: str, prompt: str) -> Dict[str, Any]:
     client = OpenAI(api_key=api_key)
-    resp = client.responses.create(
-        model=model,
-        input=prompt,
-    )
+    resp = client.responses.create(model=model, input=prompt)
     return parse_json_safely(resp.output_text)
 
 def normalize_results(grades: Dict[str, Any]) -> Dict[str, Any]:
-    # Garantir campos mínimos (sem quebrar UI)
     grades = grades or {}
     grades.setdefault("results", [])
     grades.setdefault("top3", [])
@@ -231,12 +240,75 @@ def normalize_results(grades: Dict[str, Any]) -> Dict[str, Any]:
     return grades
 
 # -------------------------
+# Lógica de prazo (fechar automático)
+# -------------------------
+def maybe_auto_close(state: Dict[str, Any]) -> Dict[str, Any]:
+    deadline = state.get("deadline_iso")
+    if not deadline:
+        return state
+
+    try:
+        dl = datetime.fromisoformat(deadline.replace("Z", "+00:00"))
+        if datetime.now(timezone.utc) >= dl and state.get("accepting", False):
+            state["accepting"] = False
+            save_state(state)
+    except Exception:
+        # se deadline inválido, ignora
+        pass
+    return state
+
+def remaining_seconds(deadline_iso: Optional[str]) -> Optional[int]:
+    if not deadline_iso:
+        return None
+    try:
+        dl = datetime.fromisoformat(deadline_iso.replace("Z", "+00:00"))
+        secs = int((dl - datetime.now(timezone.utc)).total_seconds())
+        return max(secs, 0)
+    except Exception:
+        return None
+
+# -------------------------
 # UI
 # -------------------------
 st.set_page_config(page_title=APP_TITLE, page_icon="🧠", layout="wide")
+
+# (6) Visual mais bonito (CSS leve)
+st.markdown(
+    """
+<style>
+.block-container { padding-top: 1.1rem; }
+h1, h2, h3 { letter-spacing: -0.2px; }
+div[data-testid="stMetric"] {
+  background: rgba(15, 23, 42, 0.06);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  padding: 12px;
+  border-radius: 14px;
+}
+.stButton>button {
+  border-radius: 14px !important;
+  padding: 0.65rem 1.05rem !important;
+}
+div[data-testid="stAlert"] { border-radius: 14px; }
+.badge {
+  display:inline-block; padding:6px 10px; border-radius:999px;
+  background: rgba(2, 132, 199, 0.12); border: 1px solid rgba(2, 132, 199, 0.25);
+  font-weight: 600;
+}
+.badge-red {
+  background: rgba(220, 38, 38, 0.10); border: 1px solid rgba(220, 38, 38, 0.25);
+}
+.badge-green {
+  background: rgba(34, 197, 94, 0.10); border: 1px solid rgba(34, 197, 94, 0.25);
+}
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
 st.title("🧠 Aprendendo Algoritmos 💻")
 
 state = load_state()
+state = maybe_auto_close(state)
 current_q = state.get("question") or DEFAULT_QUESTION
 
 tabs = st.tabs(["👩‍🎓 Aluno", "🛠️ Admin"])
@@ -245,10 +317,40 @@ tabs = st.tabs(["👩‍🎓 Aluno", "🛠️ Admin"])
 # ALUNO
 # -------------------------
 with tabs[0]:
+    # (7) Modo Live: auto-refresh só do painel do aluno (a cada 5s)
+    if state.get("live_mode", True):
+        st_autorefresh(interval=5000, key="live_refresh")  # 5s
+
     st.subheader("Pergunta do dia")
     st.info(current_q)
 
-    if not state.get("accepting", True):
+    # (B) Painel do aluno: contador + status + tempo restante
+    subs_all = load_submissions()
+    subs_current = [s for s in subs_all if s.get("question") == current_q]
+    rem = remaining_seconds(state.get("deadline_iso"))
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Envios da turma", len(subs_current))
+    c2.metric("Status", "Aberto ✅" if state.get("accepting", False) else "Fechado ⛔")
+    if rem is None:
+        c3.metric("Tempo restante", "—")
+    else:
+        mins = rem // 60
+        secs = rem % 60
+        c3.metric("Tempo restante", f"{mins:02d}:{secs:02d}")
+
+    st.markdown(
+        f"""
+<div style="margin-top:6px; margin-bottom:14px;">
+  <span class="badge {'badge-green' if state.get('accepting', False) else 'badge-red'}">
+    {'Coleta aberta — envie sua resposta' if state.get('accepting', False) else 'Coleta fechada — aguarde o professor'}
+  </span>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    if not state.get("accepting", False):
         st.warning("⛔ O envio de respostas está fechado no momento.")
     else:
         with st.form("student_form", clear_on_submit=True):
@@ -256,7 +358,7 @@ with tabs[0]:
             answer = st.text_area(
                 "Escreva aqui o seu algoritmo :)",
                 height=220,
-                placeholder="Exemplo: 1) Abra o estojo, 2) Procure a caneta azul, 3) Pegue a caneta azul ....",
+                placeholder="Ex.: 1) Abra o dicionário... 2) Veja a primeira letra... 3) Se a letra for antes/depois...",
             )
             submitted = st.form_submit_button("Enviar resposta", type="primary")
 
@@ -282,6 +384,22 @@ with tabs[0]:
     st.divider()
     st.caption("Dica: passos curtos, ordem clara e use condições do tipo “se... então...” quando fizer sentido.")
 
+    # (3) Revelar TOP 3 pros alunos (quando o admin liberar)
+    if state.get("show_top3_to_students", False):
+        grades = load_grades()
+        top3 = (grades or {}).get("top3", [])
+        if top3:
+            st.subheader("🏆 TOP 3 da turma (revelado pelo professor)")
+            for item in top3:
+                rank = item.get("rank", "?")
+                student = item.get("student", "-")
+                excerpt = item.get("highlight_excerpt", "")
+                st.markdown(f"**#{rank} — {student}**")
+                if excerpt:
+                    st.code(excerpt)
+        else:
+            st.info("TOP 3 ainda não disponível. Aguarde o professor finalizar a avaliação.")
+
 # -------------------------
 # ADMIN
 # -------------------------
@@ -303,13 +421,62 @@ with tabs[1]:
                 st.rerun()
 
         with colB:
-            accepting = st.toggle("Aceitar novas respostas", value=bool(state.get("accepting", True)))
-            if accepting != bool(state.get("accepting", True)):
+            accepting = st.toggle("Aceitar novas respostas", value=bool(state.get("accepting", False)))
+            if accepting != bool(state.get("accepting", False)):
                 state["accepting"] = accepting
+                # se abrir manualmente e tiver deadline expirado, limpa deadline para evitar fechar instantâneo
+                if accepting:
+                    rem = remaining_seconds(state.get("deadline_iso"))
+                    if rem == 0:
+                        state["deadline_iso"] = None
                 save_state(state)
                 st.success("Status de recebimento atualizado.")
                 st.rerun()
+
+            # (3) Revelar TOP 3 pros alunos
+            show_top3 = st.toggle("Revelar TOP 3 para alunos", value=bool(state.get("show_top3_to_students", False)))
+            if show_top3 != bool(state.get("show_top3_to_students", False)):
+                state["show_top3_to_students"] = show_top3
+                save_state(state)
+                st.success("Configuração de revelação atualizada.")
+                st.rerun()
+
+            # (7) Modo live do aluno
+            live_mode = st.toggle("Modo Live (auto-refresh no aluno)", value=bool(state.get("live_mode", True)))
+            if live_mode != bool(state.get("live_mode", True)):
+                state["live_mode"] = live_mode
+                save_state(state)
+                st.success("Modo Live atualizado.")
+                st.rerun()
+
             st.caption(f"Última atualização: {state.get('updated_at','-')}")
+
+        # (2) Admin define “tempo de coleta” (fecha automático)
+        st.markdown("### ⏱️ Tempo de coleta (fecha automático)")
+        cc1, cc2, cc3 = st.columns([1, 1, 2])
+
+        with cc1:
+            minutes = st.number_input("Minutos", min_value=0, max_value=180, value=0, step=1)
+        with cc2:
+            if st.button("Iniciar contagem", type="primary"):
+                if minutes == 0:
+                    state["deadline_iso"] = None
+                    st.success("Sem tempo definido.")
+                else:
+                    dl = datetime.now(timezone.utc) + timedelta(minutes=int(minutes))
+                    state["deadline_iso"] = dl.isoformat()
+                    state["accepting"] = True  # ao iniciar contagem, abre automaticamente
+                    st.success(f"Coleta aberta por {minutes} min.")
+                save_state(state)
+                st.rerun()
+        with cc3:
+            rem = remaining_seconds(state.get("deadline_iso"))
+            if rem is None:
+                st.info("Sem contagem ativa. Você pode abrir manualmente ou iniciar um tempo.")
+            else:
+                mins = rem // 60
+                secs = rem % 60
+                st.info(f"Tempo restante atual: **{mins:02d}:{secs:02d}** (UTC).")
 
         st.divider()
         st.subheader("📥 Submissões")
@@ -320,7 +487,7 @@ with tabs[1]:
         m1, m2, m3 = st.columns(3)
         m1.metric("Total (todas)", len(subs_all))
         m2.metric("Da questão atual", len(subs_current))
-        m3.metric("Recebendo agora?", "Sim" if state.get("accepting", True) else "Não")
+        m3.metric("Recebendo agora?", "Sim" if state.get("accepting", False) else "Não")
 
         st.markdown("### 🧹 Limpeza")
         c1, c2, c3 = st.columns([1, 1, 2])
@@ -337,10 +504,15 @@ with tabs[1]:
         with c3:
             st.caption("Isso apaga respostas do arquivo local. Use com cuidado 🙂")
 
-        df = pd.DataFrame(subs_current) if subs_current else pd.DataFrame(columns=["submission_id","student_name","answer","submitted_at"])
+        df = (
+            pd.DataFrame(subs_current)
+            if subs_current
+            else pd.DataFrame(columns=["submission_id", "student_name", "answer", "submitted_at"])
+        )
+
         if not df.empty:
             st.dataframe(df[["submitted_at", "student_name", "answer"]], use_container_width=True, height=320)
-            csv = df[["submission_id","student_name","answer","submitted_at","question"]].to_csv(index=False).encode("utf-8")
+            csv = df[["submission_id", "student_name", "answer", "submitted_at", "question"]].to_csv(index=False).encode("utf-8")
             st.download_button("⬇️ Baixar CSV (questão atual)", data=csv, file_name="submissoes.csv", mime="text/csv")
         else:
             st.warning("Ainda não há submissões para a questão atual.")
@@ -348,7 +520,6 @@ with tabs[1]:
         st.divider()
         st.subheader("🤖 Avaliar respostas")
 
-        st.caption(" ")
         api_key = st.text_input("API Key", type="password", placeholder="sk-...", key="openai_api_key")
 
         colm1, colm2, colm3 = st.columns([1, 1, 2])
@@ -369,12 +540,8 @@ with tabs[1]:
                 if not api_key or len(api_key) < 10:
                     st.error("Informe uma API Key válida.")
                 else:
-                    q_for_eval = (state.get("question") or DEFAULT_QUESTION) if only_current else "MÚLTIPLAS QUESTÕES (misturadas)"
-                    prompt = build_rubric_prompt(q_for_eval if only_current else "Avalie as respostas para a questão abaixo (cada submissão já traz a pergunta).", eval_list)
-
-                    # Se for avaliar tudo, melhor manter a pergunta por submissão no payload.
-                    # Aqui, como simplificação, usamos o mesmo prompt; o payload já tem ID/aluno/resposta.
-                    # Para múltiplas questões, você pode adaptar o payload para incluir "question" também.
+                    q_for_eval = (state.get("question") or DEFAULT_QUESTION) if only_current else "QUESTÃO ATUAL (misturada)"
+                    prompt = build_rubric_prompt(q_for_eval, eval_list)
 
                     try:
                         with st.spinner("Avaliando..."):
@@ -399,7 +566,6 @@ with tabs[1]:
 
         grades = normalize_results(load_grades())
         if grades and grades.get("results"):
-            # TOP 3
             top3 = grades.get("top3", [])
             if top3:
                 st.markdown("### 🏆 TOP 3 (melhores respostas)")
@@ -422,7 +588,6 @@ with tabs[1]:
 
                     st.divider()
 
-            # Tabela de resultados
             st.markdown("### 🧾 Notas e feedback (todas as submissões avaliadas)")
             df_g = pd.DataFrame(grades.get("results", []))
             if not df_g.empty:
@@ -430,7 +595,6 @@ with tabs[1]:
                 csv_g = df_g.to_csv(index=False).encode("utf-8")
                 st.download_button("⬇️ Baixar CSV (notas/feedbacks)", data=csv_g, file_name="avaliacao.csv", mime="text/csv")
 
-            # Resumo para o professor
             summary = grades.get("summary", {})
             if summary:
                 st.markdown("### 🧑‍🏫 Resumo para o professor")

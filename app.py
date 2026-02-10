@@ -234,7 +234,7 @@ def normalize_results(grades: Dict[str, Any]) -> Dict[str, Any]:
 # UI
 # -------------------------
 st.set_page_config(page_title=APP_TITLE, page_icon="🧠", layout="wide")
-st.title("🧠 Coleta + Avaliação (Algoritmos)")
+st.title("🧠 Aprendendo Algoritmos 💻")
 
 state = load_state()
 current_q = state.get("question") or DEFAULT_QUESTION

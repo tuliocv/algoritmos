@@ -1,26 +1,4 @@
 # app.py
-# Streamlit app: alunos enviam nome + resposta; admin gerencia questão, tempo de coleta e dispara avaliação via OpenAI.
-#
-# Melhorias desta versão:
-# - Chamada robusta da OpenAI via Responses API
-# - Extração confiável do texto retornado
-# - Parser de JSON mais tolerante
-# - Modelos atualizados no select
-# - Opção de usar API key via st.secrets["OPENAI_API_KEY"]
-# - Tratamento de erro melhor no Streamlit
-# - Botão de limpar respostas mantido
-# - Nova rodada sem misturar submissões
-#
-# Requisitos:
-#   pip install -U streamlit openai pandas streamlit-autorefresh
-#
-# .streamlit/secrets.toml:
-#   ADMIN_USER="admin"
-#   ADMIN_PASS="troque_esta_senha"
-#   OPENAI_API_KEY="sk-..."
-#
-# Rodar:
-#   streamlit run app.py
 
 import os
 import json

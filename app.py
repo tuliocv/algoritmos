@@ -24,7 +24,7 @@ DEFAULT_QUESTION = (
 
 
 # =========================
-# Persistência (arquivos)
+# Persistência
 # =========================
 def ensure_data_dir() -> None:
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -41,6 +41,7 @@ def new_question_id() -> str:
 
 def load_state() -> Dict[str, Any]:
     ensure_data_dir()
+
     if not os.path.exists(STATE_PATH):
         state = {
             "question": DEFAULT_QUESTION,
@@ -65,6 +66,7 @@ def load_state() -> Dict[str, Any]:
     state.setdefault("evaluation_mode", "natural")
     state.setdefault("accepting", False)
     state.setdefault("question", DEFAULT_QUESTION)
+
     return state
 
 
@@ -83,6 +85,7 @@ def append_submission(entry: Dict[str, Any]) -> None:
 
 def load_submissions() -> List[Dict[str, Any]]:
     ensure_data_dir()
+
     if not os.path.exists(SUBMISSIONS_PATH):
         return []
 
@@ -102,7 +105,7 @@ def clear_submissions(mode: str, question_id: Optional[str] = None) -> None:
     """
     mode:
       - "all": apaga tudo
-      - "qid": apaga apenas a rodada (question_id)
+      - "qid": apaga apenas a rodada
     """
     ensure_data_dir()
 
@@ -145,7 +148,7 @@ def clear_grades(question_id: str) -> None:
 
 
 # =========================
-# Admin auth simples
+# Auth Admin
 # =========================
 def is_admin_logged_in() -> bool:
     return bool(st.session_state.get("admin_authed", False))
@@ -161,6 +164,7 @@ def admin_login_ui() -> None:
     secrets_pass = st.secrets.get("ADMIN_PASS", "")
 
     c1, c2 = st.columns([1, 2])
+
     with c1:
         if st.button("Entrar", type="primary"):
             if user == secrets_user and pwd == secrets_pass:
@@ -197,24 +201,23 @@ MODO DE AVALIAÇÃO: PSEUDOCÓDIGO
 
 Avalie considerando:
 - Uso adequado de estruturas (SE, SENÃO, ENQUANTO, PARA)
-- Blocos e indentação coerentes (mesmo que simples)
-- Clareza de início e término
-- Variáveis/etapas nomeadas de forma compreensível
-- Lógica correta e estrutura formal (sem exigir sintaxe perfeita)
+- Clareza da lógica
+- Organização da solução
+- Completude
+- Coerência do algoritmo
 
-Não penalize por não estar em uma linguagem específica (não é Python/Java).
-Priorize lógica e estrutura.
+Não exija sintaxe perfeita de linguagem específica.
 """.strip()
     else:
         mode_block = """
 MODO DE AVALIAÇÃO: LINGUAGEM NATURAL
 
 Avalie considerando:
-- Clareza do passo a passo (linguagem simples e objetiva)
-- Ordem lógica compreensível
-- Uso de condições em linguagem natural (“se... então...”, “caso...”)
-- Completude (início, processo e término)
-- Adequação ao público proposto
+- Clareza do passo a passo
+- Ordem lógica
+- Uso de decisões em linguagem natural
+- Completude
+- Facilidade de entendimento
 """.strip()
 
     return f"""
@@ -225,54 +228,30 @@ Você é um professor da disciplina de ALGORITMOS E PROGRAMAÇÃO.
 PERGUNTA:
 {question}
 
-CRITÉRIOS (0 a 10):
-- Sequência lógica
-- Clareza
-- Uso adequado de decisões
-- Completude do algoritmo
-- Adequação ao modo de avaliação
+TAREFA:
+Avalie cada resposta com uma nota inteira de 0 a 100.
 
-TAREFA EXTRA:
-- Selecione o TOP 3 MELHORES RESPOSTAS com base neste modo de avaliação.
-- Se houver empate, prefira a mais fácil de seguir/entender.
+REGRAS:
+- 0 = resposta totalmente inadequada
+- 100 = resposta excelente
+- Use somente números inteiros
+- Avalie todas as submissões
 
-FORMATO DE SAÍDA (OBRIGATÓRIO):
-Retorne APENAS um JSON válido, sem texto extra, exatamente com esta estrutura:
+FORMATO DE SAÍDA:
+Retorne SOMENTE um JSON válido, sem markdown, sem comentários e sem qualquer texto adicional.
 
+Formato obrigatório:
 {{
   "results": [
     {{
       "submission_id": "string",
       "student": "string",
-      "score": 0,
-      "strengths": ["..."],
-      "improvements": ["..."],
-      "one_suggestion": "..."
+      "score": 0
     }}
-  ],
-  "top3": [
-    {{
-      "rank": 1,
-      "submission_id": "string",
-      "student": "string",
-      "why_it_wins": ["..."],
-      "highlight_excerpt": "..."
-    }}
-  ],
-  "summary": {{
-    "common_strengths": ["..."],
-    "common_gaps": ["..."],
-    "teacher_tip": "..."
-  }}
+  ]
 }}
 
-IMPORTANTE:
-- Retorne somente JSON válido.
-- Não use markdown.
-- Não inclua explicações antes ou depois do JSON.
-- Todos os campos devem existir, mesmo que vazios.
-
-SUBMISSÕES (JSON):
+SUBMISSÕES:
 {json.dumps(payload, ensure_ascii=False, indent=2)}
 """.strip()
 
@@ -295,12 +274,9 @@ def parse_json_safely(text: str) -> Dict[str, Any]:
     end = text.rfind("}")
     if start != -1 and end != -1 and end > start:
         candidate = text[start:end + 1]
-        try:
-            return json.loads(candidate)
-        except json.JSONDecodeError as e:
-            raise ValueError(f"JSON inválido retornado pelo modelo: {e}") from e
+        return json.loads(candidate)
 
-    raise ValueError(f"Não foi possível interpretar JSON do retorno do modelo. Resposta recebida: {text[:1000]}")
+    raise ValueError(f"Não foi possível interpretar JSON. Resposta recebida: {text[:1000]}")
 
 
 def extract_text_from_response(resp: Any) -> str:
@@ -335,7 +311,12 @@ def run_openai_evaluation(api_key: str, model: str, prompt: str) -> Dict[str, An
         input=[
             {
                 "role": "system",
-                "content": "Você é um professor de Algoritmos e Programação. Retorne somente JSON válido, sem markdown e sem texto extra.",
+                "content": (
+                    "Você é um avaliador de respostas de alunos. "
+                    "Retorne somente JSON válido. "
+                    "Não use markdown. "
+                    "Não escreva explicações."
+                ),
             },
             {
                 "role": "user",
@@ -351,20 +332,45 @@ def run_openai_evaluation(api_key: str, model: str, prompt: str) -> Dict[str, An
 def normalize_results(grades: Dict[str, Any]) -> Dict[str, Any]:
     grades = grades or {}
     grades.setdefault("results", [])
-    grades.setdefault("top3", [])
-    grades.setdefault(
-        "summary",
-        {
-            "common_strengths": [],
-            "common_gaps": [],
-            "teacher_tip": "",
-        },
-    )
+
+    normalized = []
+
+    for item in grades.get("results", []):
+        try:
+            score = int(item.get("score", 0))
+        except Exception:
+            score = 0
+
+        score = max(0, min(100, score))
+
+        normalized.append(
+            {
+                "submission_id": item.get("submission_id", ""),
+                "student": item.get("student", ""),
+                "score": score,
+            }
+        )
+
+    normalized = sorted(normalized, key=lambda x: x["score"], reverse=True)
+
+    top3 = []
+    for i, item in enumerate(normalized[:3], start=1):
+        top3.append(
+            {
+                "rank": i,
+                "submission_id": item["submission_id"],
+                "student": item["student"],
+                "score": item["score"],
+            }
+        )
+
+    grades["results"] = normalized
+    grades["top3"] = top3
     return grades
 
 
 # =========================
-# Lógica de prazo
+# Prazo / tempo
 # =========================
 def maybe_auto_close(state: Dict[str, Any]) -> Dict[str, Any]:
     deadline = state.get("deadline_iso")
@@ -385,6 +391,7 @@ def maybe_auto_close(state: Dict[str, Any]) -> Dict[str, Any]:
 def remaining_seconds(deadline_iso: Optional[str]) -> Optional[int]:
     if not deadline_iso:
         return None
+
     try:
         dl = datetime.fromisoformat(deadline_iso.replace("Z", "+00:00"))
         secs = int((dl - datetime.now(timezone.utc)).total_seconds())
@@ -425,10 +432,6 @@ div[data-testid="stAlert"] { border-radius: 14px; }
 .badge-green {
   background: rgba(34, 197, 94, 0.10); border: 1px solid rgba(34, 197, 94, 0.25);
 }
-.small-muted {
-  font-size: 0.9rem;
-  color: rgba(100,100,100,0.95);
-}
 </style>
 """,
     unsafe_allow_html=True,
@@ -465,6 +468,7 @@ with tabs[0]:
     c1, c2, c3 = st.columns(3)
     c1.metric("Envios da turma", len(subs_current))
     c2.metric("Status", "Aberto ✅" if state.get("accepting", False) else "Fechado ⛔")
+
     if rem is None:
         c3.metric("Tempo restante", "—")
     else:
@@ -491,7 +495,7 @@ with tabs[0]:
             answer = st.text_area(
                 "Escreva aqui o seu algoritmo :)",
                 height=220,
-                placeholder="Ex.: 1) Abra o dicionário... 2) Veja a primeira letra... 3) Se a letra for antes/depois...",
+                placeholder="Ex.: 1) Faça isso... 2) Depois faça aquilo... 3) Se acontecer X, então faça Y...",
             )
             submitted = st.form_submit_button("Enviar resposta", type="primary")
 
@@ -514,24 +518,21 @@ with tabs[0]:
                 }
                 append_submission(entry)
                 st.success("✅ Resposta registrada! Obrigado 🙂")
+                st.rerun()
 
     st.divider()
     st.caption("Dica: passos curtos, ordem clara e use condições do tipo “se... então...” quando fizer sentido.")
 
     if state.get("show_top3_to_students", False):
-        grades = load_grades(qid)
-        top3 = (grades or {}).get("top3", [])
+        grades = normalize_results(load_grades(qid))
+        top3 = grades.get("top3", [])
+
         if top3:
-            st.subheader("🏆 TOP 3 da turma (revelado pelo professor)")
+            st.subheader("🏆 TOP 3 da turma")
             for item in top3:
-                rank = item.get("rank", "?")
-                student = item.get("student", "-")
-                excerpt = item.get("highlight_excerpt", "")
-                st.markdown(f"**#{rank} — {student}**")
-                if excerpt:
-                    st.code(excerpt)
+                st.markdown(f"**#{item['rank']} — {item['student']}**  \nNota: **{item['score']}**")
         else:
-            st.info("TOP 3 ainda não disponível. Aguarde o professor finalizar a avaliação.")
+            st.info("TOP 3 ainda não disponível.")
 
 
 # =========================
@@ -588,8 +589,8 @@ with tabs[1]:
         st.markdown("### 🧠 Tipo de avaliação do algoritmo")
 
         mode_options = {
-            "natural": "🗣️ Linguagem natural (passo a passo descritivo)",
-            "pseudocode": "🧩 Pseudocódigo (estrutura algorítmica formal)",
+            "natural": "🗣️ Linguagem natural",
+            "pseudocode": "🧩 Pseudocódigo",
         }
 
         selected_mode = st.radio(
@@ -605,7 +606,7 @@ with tabs[1]:
             st.success("Modo de avaliação atualizado.")
             st.rerun()
 
-        st.markdown("### ⏱️ Tempo de coleta (fecha automático)")
+        st.markdown("### ⏱️ Tempo de coleta")
         cc1, cc2, cc3 = st.columns([1, 1, 2])
 
         with cc1:
@@ -627,11 +628,11 @@ with tabs[1]:
         with cc3:
             rem = remaining_seconds(state.get("deadline_iso"))
             if rem is None:
-                st.info("Sem contagem ativa. Você pode abrir manualmente ou iniciar um tempo.")
+                st.info("Sem contagem ativa.")
             else:
                 mins = rem // 60
                 secs = rem % 60
-                st.info(f"Tempo restante atual: **{mins:02d}:{secs:02d}** (UTC).")
+                st.info(f"Tempo restante atual: **{mins:02d}:{secs:02d}**")
 
         st.divider()
         st.subheader("📥 Submissões (rodada atual)")
@@ -662,7 +663,7 @@ with tabs[1]:
                 st.rerun()
 
         with lc3:
-            st.caption("Isso apaga respostas do arquivo local. Use com cuidado 🙂")
+            st.caption("Isso apaga respostas do arquivo local. Use com cuidado.")
 
         df = pd.DataFrame(subs_current) if subs_current else pd.DataFrame(
             columns=["submission_id", "student_name", "answer", "submitted_at"]
@@ -695,17 +696,20 @@ with tabs[1]:
         )
 
         colm1, colm2, colm3 = st.columns([1, 1, 2])
+
         with colm1:
             model = st.selectbox(
                 "Modelo",
                 options=["gpt-5-mini", "gpt-4.1-mini", "gpt-4.1"],
                 index=0,
             )
+
         with colm2:
             st.caption(" ")
             st.caption(f"Modo: **{mode_label}**")
+
         with colm3:
-            st.caption("Depois de inserir a chave é só ir :)")
+            st.caption("Clique em avaliar para gerar o ranking.")
 
         btn_col1, btn_col2 = st.columns([1, 1])
 
@@ -719,6 +723,7 @@ with tabs[1]:
                         submissions=subs_current,
                         mode=state.get("evaluation_mode", "natural"),
                     )
+
                     try:
                         with st.spinner("Avaliando..."):
                             result = run_openai_evaluation(
@@ -726,15 +731,18 @@ with tabs[1]:
                                 model=model,
                                 prompt=prompt,
                             )
+
                         result = normalize_results(result)
                         result["evaluated_at"] = now_iso()
                         result["evaluated_count"] = len(subs_current)
                         result["question_id"] = qid
                         result["question_text"] = current_q
                         result["evaluation_mode"] = state.get("evaluation_mode", "natural")
+
                         save_grades(qid, result)
-                        st.success(f"✅ Avaliação concluída e salva em data/grades/{qid}.json.")
+                        st.success("✅ Avaliação concluída com sucesso.")
                         st.rerun()
+
                     except Exception as e:
                         st.exception(e)
 
@@ -748,62 +756,33 @@ with tabs[1]:
         st.subheader("📊 Resultados salvos (rodada atual)")
 
         grades = normalize_results(load_grades(qid))
+
         if grades and grades.get("results"):
-            top3 = grades.get("top3", [])
-            if top3:
-                st.markdown("### 🏆 TOP 3 (melhores respostas)")
-                for item in top3:
-                    rank = item.get("rank", "?")
-                    student = item.get("student", "-")
-                    sid = item.get("submission_id", "-")
-                    st.markdown(f"**#{rank} — {student}**  \nSubmission ID: `{sid}`")
+            df_g = pd.DataFrame(grades["results"])
 
-                    why = item.get("why_it_wins", [])
-                    if why:
-                        st.write("**Por que entrou no TOP 3:**")
-                        for w in why:
-                            st.write(f"- {w}")
-
-                    excerpt = item.get("highlight_excerpt")
-                    if excerpt:
-                        st.write("**Trecho destaque:**")
-                        st.code(excerpt)
-
-                    st.divider()
-
-            st.markdown("### 🧾 Notas e feedback (todas as submissões avaliadas)")
-            df_g = pd.DataFrame(grades.get("results", []))
             if not df_g.empty:
-                st.dataframe(df_g, use_container_width=True, height=320)
+                df_g = df_g[["student", "score"]].copy()
+                df_g.columns = ["Aluno", "Nota"]
+                df_g = df_g.sort_values(by="Nota", ascending=False).reset_index(drop=True)
+
+                st.markdown("### 🧾 Ranking da turma")
+                st.dataframe(df_g, use_container_width=True, height=400)
+
                 csv_g = df_g.to_csv(index=False).encode("utf-8")
                 st.download_button(
-                    "⬇️ Baixar CSV (notas/feedbacks)",
+                    "⬇️ Baixar CSV (ranking da turma)",
                     data=csv_g,
-                    file_name="avaliacao_rodada_atual.csv",
+                    file_name="ranking_turma.csv",
                     mime="text/csv",
                 )
 
-            summary = grades.get("summary", {})
-            if summary:
-                st.markdown("### 🧑‍🏫 Resumo para o professor")
-
-                common_strengths = summary.get("common_strengths", [])
-                common_gaps = summary.get("common_gaps", [])
-                teacher_tip = summary.get("teacher_tip", "")
-
-                if common_strengths:
-                    st.write("**Forças comuns:**")
-                    for x in common_strengths:
-                        st.write(f"- {x}")
-
-                if common_gaps:
-                    st.write("**Lacunas comuns:**")
-                    for x in common_gaps:
-                        st.write(f"- {x}")
-
-                if teacher_tip:
-                    st.write("**Dica de condução da aula:**")
-                    st.write(teacher_tip)
+            top3 = grades.get("top3", [])
+            if top3:
+                st.markdown("### 🏆 TOP 3")
+                for item in top3:
+                    st.markdown(
+                        f"**#{item['rank']} — {item['student']}**  \nNota: **{item['score']}**"
+                    )
 
             st.caption(
                 f"Avaliado em: {grades.get('evaluated_at', '-')} | "
@@ -811,4 +790,4 @@ with tabs[1]:
                 f"Modo: {grades.get('evaluation_mode', '-')} | Rodada: {qid}"
             )
         else:
-            st.info("Nenhuma avaliação salva ainda. Clique em **Avaliar agora** para gerar notas e TOP 3.")
+            st.info("Nenhuma avaliação salva ainda. Clique em **Avaliar agora** para gerar as notas.")
